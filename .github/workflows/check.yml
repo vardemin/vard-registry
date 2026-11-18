@@ -1,0 +1,54 @@
+# The publish gate on every pull request: each submissions/<name>/ is checked with
+# `vard publish --dry-run` against this registry, with the PR author as the owner.
+name: check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install vard
+        run: |
+          curl -fsSL https://github.com/vardemin/vardui/releases/latest/download/vard-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin
+          vard --version
+
+      - name: Only submissions/ may change
+        run: |
+          outside=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -v '^submissions/' || true)
+          if [ -n "$outside" ]; then
+            echo "pull requests may change only submissions/; these files are maintained by CI:"
+            echo "$outside"
+            exit 1
+          fi
+
+      - name: Gate
+        env:
+          OWNER: ${{ github.event.pull_request.user.login }}
+        run: |
+          status=0
+          found=0
+          for dir in submissions/*/; do
+            [ -f "$dir/vard.toml" ] || continue
+            found=1
+            name=$(basename "$dir")
+            declared=$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$dir/vard.toml" | head -1)
+            if [ "$name" != "$declared" ]; then
+              echo "::error::submissions/$name declares package \`$declared\`: the directory name must equal [package] name"
+              status=1
+              continue
+            fi
+            echo "::group::$name"
+            vard publish "$dir" --registry . --owner "$OWNER" --dry-run || status=1
+            echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || echo "no submissions in this pull request"
+          exit $status
